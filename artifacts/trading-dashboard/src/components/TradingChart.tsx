@@ -1,0 +1,1082 @@
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import {
+  createChart,
+  ColorType,
+  IChartApi,
+  ISeriesApi,
+  Time,
+  LineStyle,
+  CrosshairMode,
+  CandlestickSeries,
+  LineSeries,
+  createSeriesMarkers,
+  SeriesMarker,
+  ISeriesMarkersPluginApi,
+} from 'lightweight-charts';
+import type { TradingAnalysisResponse, SRLevel, SessionBox, BosChochResponse, TrendlineSegment } from '@/hooks/use-trading-api';
+import type { ToggleState } from '@/components/TopBar';
+
+const SESSION_STYLE: Record<string, { bg: string; border: string; label: string; textColor: string }> = {
+  asian:  { bg: 'rgba(251,191,36,0.10)',  border: 'rgba(251,191,36,0.75)',  label: 'ASIA',   textColor: 'rgba(251,191,36,0.9)' },
+  london: { bg: 'rgba(59,130,246,0.10)',  border: 'rgba(59,130,246,0.75)',  label: 'LONDON', textColor: 'rgba(59,130,246,0.9)' },
+  ny:     { bg: 'rgba(34,197,94,0.10)',   border: 'rgba(34,197,94,0.75)',   label: 'NY',     textColor: 'rgba(34,197,94,0.9)' },
+};
+
+const ZONE_SUPPLY = { bg: 'rgba(239,83,80,0.10)', border: 'rgba(239,83,80,0.50)', label: 'S', textColor: 'rgba(239,83,80,0.8)' };
+const ZONE_DEMAND = { bg: 'rgba(38,166,154,0.10)', border: 'rgba(38,166,154,0.50)', label: 'D', textColor: 'rgba(38,166,154,0.8)' };
+
+const OB_BULLISH = { bg: 'rgba(163,230,53,0.15)',  border: 'rgba(163,230,53,0.80)', label: 'OB BULL', textColor: 'rgba(163,230,53,1.00)' };
+const OB_BEARISH = { bg: 'rgba(192,132,252,0.15)', border: 'rgba(192,132,252,0.80)', label: 'OB BEAR', textColor: 'rgba(192,132,252,1.00)' };
+
+const FVG_BULLISH = { bg: 'rgba(34,211,238,0.10)',  border: 'rgba(34,211,238,0.55)', label: 'FVG BULL', textColor: 'rgba(34,211,238,0.90)' };
+const FVG_BEARISH = { bg: 'rgba(232,121,249,0.10)', border: 'rgba(232,121,249,0.55)', label: 'FVG BEAR', textColor: 'rgba(232,121,249,0.90)' };
+// MTF Zone overlays — color-coded by source timeframe
+const MTF_ZONE_COLORS: Record<string, { bg: string; border: string; label: string }> = {
+  w1: { bg: 'rgba(147,51,234,0.12)',  border: 'rgba(168,85,247,0.60)',  label: 'W1' },
+  d1: { bg: 'rgba(59,130,246,0.12)',  border: 'rgba(96,165,250,0.60)',  label: 'D1' },
+  '4h': { bg: 'rgba(34,197,94,0.12)', border: 'rgba(74,222,128,0.60)', label: '4H' },
+  '1h': { bg: 'rgba(234,179,8,0.12)', border: 'rgba(250,204,21,0.60)', label: '1H' },
+};
+
+// Opacity per timeframe — higher TF = more prominent
+const MTF_TF_OPACITY: Record<string, number> = {
+  w1:  1.00,
+  d1:  0.90,
+  '4h': 0.75,
+  '1h': 0.35,
+};
+
+interface TradingChartProps {
+  data: TradingAnalysisResponse | undefined;
+  srLevels: SRLevel[] | undefined;
+  sessions?: SessionBox[];
+  toggles: ToggleState;
+  bosChochData?: BosChochResponse;
+  onPriceClick?: (price: number) => void;
+  slLine?: number | null;
+  tpLine?: number | null;
+  fibLevels?: FibLevel[];
+  fibD1Levels?: FibLevel[];
+  timeframe: string;
+  broken?: boolean;
+  mtfZones?: {
+    zones_w1: any[];
+    zones_d1: any[];
+    zones_4h: any[];
+    zones_1h: any[];
+  };
+  confluencePrices?: Map<number, import("@/hooks/use-trading-api").ConfluenceHit>;
+}
+
+// ── Exported so TradeTeller can reuse them without duplicating logic ──────────
+export interface OrderBlockData { type: 'bullish' | 'bearish'; top: number; bottom: number; time: number; }
+export interface FVGData         { type: 'bullish' | 'bearish'; top: number; bottom: number; }
+
+const SR_COLORS = {
+  resistance: '#f1c40f',
+  support:    '#9b59b6',
+};
+
+const BOS_COLORS = {
+  bullish: '#26a69a',
+  bearish: '#ef5350',
+};
+const CHOCH_COLOR = '#f59e0b';
+
+const TF_LABEL: Record<string, string> = {
+  "4h": "4H", "1h": "1H", "15m": "15M", "d1": "D1", "w1": "W1",
+};
+
+const SR_TF_CONFIG: Record<string, { proximity: number; maxEach: number }> = {
+  '15m': { proximity: 0.012, maxEach: 2 },
+  '1h':  { proximity: 0.018, maxEach: 2 },
+  '4h':  { proximity: 0.025, maxEach: 2 },
+  'd1':  { proximity: 0.060, maxEach: 2 },
+  'w1':  { proximity: 0.12,  maxEach: 2 },
+};
+
+// ── Exported: pip size helper ─────────────────────────────────────────────────
+export function pipSize(price: number): number {
+  if (price > 10_000) return 1.0;    // BTC (~65 000)
+  if (price > 500)    return 0.1;    // Gold (~2 350)
+  if (price > 50)     return 0.01;   // JPY pairs (~150)
+  return 0.0001;                     // Standard FX (~1.08)
+}
+
+
+// ── Exported: Fibonacci level ─────────────────────────────────────────────────
+export interface FibLevel {
+  price: number;
+  label: string;
+  pct: number;
+  isKey: boolean;
+  isExt?: boolean;
+}
+
+// ── Exported: Order Block detection ──────────────────────────────────────────
+export function detectOrderBlocks(candles: any[], currentPrice: number, isD1 = false): OrderBlockData[] {
+  const n = candles.length;
+  if (n < 10) return [];
+  const pip     = pipSize(currentPrice);
+  const minSize = isD1 ? 20 * pip : 5 * pip;
+
+  // PRIORITY 1 — cap proximity at 60 pips intraday, 300 pips on D1
+  const proximity = isD1
+    ? Math.min(0.02, (300 * pip) / currentPrice)
+    : Math.min(0.015, (60 * pip) / currentPrice);
+
+  const results: (OrderBlockData & { dist: number; touchCount: number; strengthScore: number })[] = [];
+
+  for (let i = 1; i < n - 3; i++) {
+    const c = candles[i];
+
+    // PRIORITY 2 — pre-compute average candle range of the last 10 bars (impulse proxy)
+    const lookback = candles.slice(Math.max(0, i - 10), i);
+    const avgRange = lookback.length
+      ? lookback.reduce((sum: number, x: any) => sum + (x.high - x.low), 0) / lookback.length
+      : 0;
+
+    // ── Bullish OB candidate: bearish candle (close < open) ───────────────
+    if (c.close < c.open) {
+      const slice      = candles.slice(i + 1, Math.min(i + 6, n));
+      const futureHigh = Math.max(...slice.map((x: any) => x.close));
+
+      if (futureHigh > c.high && c.high - c.low >= minSize) {
+        // PRIORITY 2 — displacement: the break candle must be impulsive (≥ 1.5× avg range)
+        const breakCandle = slice.reduce((best: any, x: any) =>
+          (x.high - x.low) > (best.high - best.low) ? x : best, slice[0]);
+        const hasDisplacement = avgRange > 0 && (breakCandle.high - breakCandle.low) >= 1.5 * avgRange;
+        if (!hasDisplacement) continue;
+
+        const center = (c.high + c.low) / 2;
+        const dist   = Math.abs(center - currentPrice) / currentPrice;
+
+        if (dist <= proximity) {
+          // PRIORITY 3 — mitigation needs a clear close beyond boundary (2-pip buffer)
+          //              prevents shallow wick sweeps from killing valid OBs
+          const mitBuf = currentPrice > 10_000 ? 50 * pip : currentPrice > 500 ? 5 * pip : 2 * pip;
+          const mitigated = candles.slice(i + 1).some((fc: any) => fc.close < c.low - mitBuf);
+          if (!mitigated) {
+            const touchCount    = candles.slice(i + 1).filter((fc: any) => fc.low <= c.high && fc.high >= c.low).length;
+            const strengthScore = avgRange > 0 ? (breakCandle.high - breakCandle.low) / avgRange : 1.0;
+            results.push({ type: 'bullish', top: c.high, bottom: c.low, dist, time: c.time, touchCount, strengthScore });
+          }
+        }
+      }
+    }
+
+    // ── Bearish OB candidate: bullish candle (close > open) ───────────────
+    if (c.close > c.open) {
+      const slice     = candles.slice(i + 1, Math.min(i + 6, n));
+      const futureLow = Math.min(...slice.map((x: any) => x.close));
+
+      if (futureLow < c.low && c.high - c.low >= minSize) {
+        // PRIORITY 2 — displacement check (same logic, symmetric)
+        const breakCandle = slice.reduce((best: any, x: any) =>
+          (x.high - x.low) > (best.high - best.low) ? x : best, slice[0]);
+        const hasDisplacement = avgRange > 0 && (breakCandle.high - breakCandle.low) >= 1.5 * avgRange;
+        if (!hasDisplacement) continue;
+
+        const center = (c.high + c.low) / 2;
+        const dist   = Math.abs(center - currentPrice) / currentPrice;
+
+        if (dist <= proximity) {
+          // PRIORITY 3 — mitigation with 2-pip buffer (symmetric)
+          const mitBuf = currentPrice > 10_000 ? 50 * pip : currentPrice > 500 ? 5 * pip : 2 * pip;
+          const mitigated = candles.slice(i + 1).some((fc: any) => fc.close > c.high + mitBuf);
+          if (!mitigated) {
+            const touchCount    = candles.slice(i + 1).filter((fc: any) => fc.low <= c.high && fc.high >= c.low).length;
+            const strengthScore = avgRange > 0 ? (breakCandle.high - breakCandle.low) / avgRange : 1.0;
+            results.push({ type: 'bearish', top: c.high, bottom: c.low, dist, time: c.time, touchCount, strengthScore });
+          }
+        }
+      }
+    }
+  }
+
+  function _bestOB(candidates: any[]) {
+   const fresh  = candidates.filter(o => o.touchCount === 0).sort((a: any, b: any) => b.strengthScore - a.strengthScore);
+   const tested = candidates.filter(o => o.touchCount  > 0).sort((a: any, b: any) => b.strengthScore - a.strengthScore);
+   return (fresh.length ? fresh : tested).slice(0, 1);
+  }
+
+  const bull = _bestOB(results.filter(o => o.type === 'bullish' && (o.top + o.bottom) / 2 <= currentPrice));
+  const bear = _bestOB(results.filter(o => o.type === 'bearish' && (o.top + o.bottom) / 2 >= currentPrice));
+
+  return [...bull, ...bear].map(({ type, top, bottom, time }) => ({
+    type,
+    top:    Math.round(top    * 1e5) / 1e5,
+    bottom: Math.round(bottom * 1e5) / 1e5,
+    time,
+ }));
+}
+
+
+// ── Exported: Fair Value Gap detection ───────────────────────────────────────
+export function detectFVGs(candles: any[], currentPrice: number, isD1 = false): FVGData[] {
+  const n = candles.length;
+  if (n < 3) return [];
+  const pip       = pipSize(currentPrice);
+  const minGap    = isD1 ? 10 * pip : 3 * pip;
+  const proximity = isD1
+    ? Math.min(0.02, (400 * pip) / currentPrice)
+    : Math.min(0.01, (100 * pip) / currentPrice);
+  const results: (FVGData & { dist: number })[] = [];
+
+  for (let i = 1; i < n - 1; i++) {
+    const prev   = candles[i - 1];
+    const mid    = candles[i];
+    const next   = candles[i + 1];
+    const lkb    = candles.slice(Math.max(0, i - 8), i);
+    const avgRng = lkb.length ? lkb.reduce((s: number, x: any) => s + (x.high - x.low), 0) / lkb.length : 0;
+    if (avgRng > 0 && (mid.high - mid.low) < 1.2 * avgRng) continue;
+
+    const bTop    = next.low;
+    const bBottom = prev.high;
+    if (bTop > bBottom && bTop - bBottom >= minGap) {
+      const center = (bTop + bBottom) / 2;
+      const dist   = Math.abs(center - currentPrice) / currentPrice;
+      if (dist <= proximity) {
+        const mitigated = candles.slice(i + 2).some((c: any) => c.close <= bBottom + (bTop - bBottom) * 0.5);
+        if (!mitigated) results.push({ type: 'bullish', top: bTop, bottom: bBottom, dist });
+      }
+    }
+
+    const dTop    = prev.low;
+    const dBottom = next.high;
+    if (dTop > dBottom && dTop - dBottom >= minGap) {
+      const center = (dTop + dBottom) / 2;
+      const dist   = Math.abs(center - currentPrice) / currentPrice;
+      if (dist <= proximity) {
+        const mitigated = candles.slice(i + 2).some((c: any) => c.close >= dTop - (dTop - dBottom) * 0.5);
+        if (!mitigated) results.push({ type: 'bearish', top: dTop, bottom: dBottom, dist });
+      }
+    }
+  }
+
+  const bull = results
+    .filter(f => f.type === 'bullish' && (f.top + f.bottom) / 2 <= currentPrice)
+    .sort((a, b) => a.dist - b.dist)
+    .slice(0, 1);
+  const bear = results
+    .filter(f => f.type === 'bearish' && (f.top + f.bottom) / 2 >= currentPrice)
+    .sort((a, b) => a.dist - b.dist)
+    .slice(0, 1);
+
+  return [...bull, ...bear].map(({ type, top, bottom }) => ({
+    type,
+    top:    Math.round(top    * 1e5) / 1e5,
+    bottom: Math.round(bottom * 1e5) / 1e5,
+  }));
+}
+
+export function TradingChart({ data, srLevels, sessions, toggles, bosChochData, onPriceClick, slLine, tpLine, fibLevels, fibD1Levels, timeframe, mtfZones, confluencePrices }: TradingChartProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const zigzagSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const trendlineSeriesRefs = useRef<ISeriesApi<'Line'>[]>([]);
+  const srPriceLinesRef = useRef<ReturnType<ISeriesApi<'Candlestick'>['createPriceLine']>[]>([]);
+  const bosChochLinesRef = useRef<ReturnType<ISeriesApi<'Candlestick'>['createPriceLine']>[]>([]);
+  const slTpLinesRef = useRef<ReturnType<ISeriesApi<'Candlestick'>['createPriceLine']>[]>([]);
+  
+  const markersPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const onPriceClickRef = useRef(onPriceClick);
+  useEffect(() => { onPriceClickRef.current = onPriceClick; }, [onPriceClick]);
+
+  const [layoutTick, setLayoutTick] = useState(0);
+  const tick = useCallback(() => setLayoutTick(t => t + 1), []);
+
+  const sortedCandles = useMemo(() => {
+    if (!data?.candles) return [];
+    return Array.from(new Map(data.candles.map((c: any) => [c.time, c])).values())
+      .sort((a: any, b: any) => a.time - b.time);
+  }, [data?.candles]);
+
+  const currentPrice = useMemo(() =>
+    sortedCandles.length ? (sortedCandles[sortedCandles.length - 1] as any).close as number : null,
+  [sortedCandles]);
+
+  const isD1 = timeframe === "d1" || timeframe === "w1";
+  const computedOBs = useMemo((): OrderBlockData[] => {
+    if (!toggles.ob || !sortedCandles.length || currentPrice === null) return [];
+    return detectOrderBlocks(sortedCandles, currentPrice, isD1);
+  }, [sortedCandles, currentPrice, toggles.ob, isD1]);
+  const computedFVGs = useMemo((): FVGData[] => {
+    if (!toggles.fvg || !sortedCandles.length || currentPrice === null) return [];
+    return detectFVGs(sortedCandles, currentPrice, isD1);
+  }, [sortedCandles, currentPrice, toggles.fvg, isD1]);
+  // ── Effect 1: Create chart + series once ──────────────────────────────────
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    const chart = createChart(containerRef.current, {
+      layout: {
+        background: { type: ColorType.Solid, color: 'transparent' },
+        textColor: '#94a3b8',
+        fontSize: 11,
+        fontFamily: "'Roboto Mono', monospace",
+      },
+      grid: {
+        vertLines: { color: 'rgba(255,255,255,0.03)' },
+        horzLines: { color: 'rgba(255,255,255,0.03)' },
+      },
+      crosshair: {
+        mode: CrosshairMode.Normal,
+        vertLine: { width: 1, color: 'rgba(255,255,255,0.2)', style: LineStyle.SparseDotted, labelBackgroundColor: '#2962ff' },
+        horzLine: { width: 1, color: 'rgba(255,255,255,0.2)', style: LineStyle.SparseDotted, labelBackgroundColor: '#2962ff' },
+      },
+      rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', autoScale: true },
+      timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 15 },
+      width: containerRef.current.clientWidth,
+      height: containerRef.current.clientHeight,
+    });
+
+    chartRef.current = chart;
+
+    const candleSeries = chart.addSeries(CandlestickSeries, {
+      upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
+      wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+    });
+    candleSeriesRef.current = candleSeries;
+
+    markersPluginRef.current = createSeriesMarkers(candleSeries, []);
+
+    const zzSeries = chart.addSeries(LineSeries, {
+      color: 'rgba(255,255,255,0.85)', lineWidth: 2,
+      crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
+    });
+    zigzagSeriesRef.current = zzSeries;
+
+    chart.timeScale().subscribeVisibleLogicalRangeChange(tick);
+
+          const handleChartClick = (e: MouseEvent) => {
+  if (!candleSeriesRef.current || !onPriceClickRef.current || !containerRef.current) return;
+  const rect = containerRef.current.getBoundingClientRect();
+  const y = e.clientY - rect.top;
+  try {
+    const price = candleSeriesRef.current.coordinateToPrice(y);
+    if (price !== null && price !== undefined) {
+      onPriceClickRef.current(Math.round(price * 1e5) / 1e5);
+    }
+  } catch {}
+};
+containerRef.current?.addEventListener('click', handleChartClick);
+    
+    
+
+
+
+
+
+
+    const handleResize = () => {
+      if (!containerRef.current) return;
+      chart.applyOptions({ width: containerRef.current.clientWidth, height: containerRef.current.clientHeight });
+      tick();
+    };
+    window.addEventListener('resize', handleResize);
+    handleResize();
+
+    return () => { window.removeEventListener('resize', handleResize); 
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(tick);
+      containerRef.current?.removeEventListener('click', handleChartClick);
+      chart.remove();
+    }
+
+
+  }, []);
+
+  // ── Effect 2: Candles, zigzag, trendlines, structure markers ──────────────
+  useEffect(() => {
+    if (!data || !chartRef.current || !candleSeriesRef.current || !zigzagSeriesRef.current) return;
+
+    const uniqueCandles = Array.from(new Map(data.candles.map(c => [c.time, c])).values())
+      .sort((a, b) => a.time - b.time);
+    candleSeriesRef.current.setData(uniqueCandles as any);
+
+    if (uniqueCandles.length > 0) {
+      const latestClose = (uniqueCandles[uniqueCandles.length - 1] as any).close as number;
+      candleSeriesRef.current.applyOptions({
+        priceFormat: {
+          type:      'price',
+          precision: latestClose > 500  ? 2 : latestClose > 50 ? 3 : 5,
+          minMove:   latestClose > 500  ? 0.01 : latestClose > 50 ? 0.001 : 0.00001,
+        },
+      });
+    }
+
+    
+
+    if (toggles.zigzag && (data.swings?.length ?? 0) > 0) {
+      const uniqueSwings = Array.from(new Map(data.swings.map(s => [s.time, s])).values()
+      ).sort((a, b) => a.time - b.time);
+      zigzagSeriesRef.current.setData(
+        uniqueSwings.map(s => ({ time: s.time as Time, value: s.price })) as any
+      );
+    } else {
+      zigzagSeriesRef.current.setData([]);
+      }
+      
+
+    trendlineSeriesRefs.current.forEach(s => { try { chartRef.current?.removeSeries(s); } catch {} });
+    trendlineSeriesRefs.current = [];
+
+    
+    // Adapter: backend now returns a single trendline object (or null) per direction,
+    // not an array. Normalise to an array so the drawing logic stays unchanged.
+    const toLines = (tl: TrendlineSegment | null): { from_time: number; from_price: number; to_time: number; to_price: number }[] => {
+      if (!tl) return [];                            // null → nothing to draw
+      if (tl.valid === false || tl.invalidated) return []; // invalid/broken → skip
+      return [tl];                                   // single object → wrap in array
+    };
+
+    const addTrendlines = (lines: { from_time: number; from_price: number; to_time: number; to_price: number }[], color: string) => {
+      lines.forEach(line => {
+        if (line.from_time === line.to_time) return;
+        const s = chartRef.current!.addSeries(LineSeries, {
+          color, lineWidth: 1, lineStyle: LineStyle.Solid,
+          crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
+        });
+        try {
+          s.setData([
+            { time: line.from_time as Time, value: line.from_price },
+            { time: line.to_time as Time, value: line.to_price },
+          ] as any);
+          trendlineSeriesRefs.current.push(s);
+        } catch {
+          chartRef.current?.removeSeries(s);
+        }
+      });
+    };
+
+    addTrendlines(toLines(data.trendlines.bullish), 'rgba(38,166,154,0.65)');
+    addTrendlines(toLines(data.trendlines.bearish), 'rgba(239,83,80,0.65)');
+
+    if (markersPluginRef.current) {
+      if (toggles.labels) {
+        const seenTimes = new Set<number>();
+        const markers: SeriesMarker<Time>[] = data.structure_labels.filter(label => {
+          if (seenTimes.has(label.time as number)) return false;
+          seenTimes.add(label.time as number);
+          return true;
+        }).map(label => ({
+          time: label.time as Time,
+          position: label.kind === 'high' ? 'aboveBar' : 'belowBar',
+          color: label.kind === 'high' ? '#ef5350' : '#26a69a',
+          shape: label.kind === 'high' ? 'arrowDown' : 'arrowUp',
+          text: label.label,
+          size: 1.2,
+        }));
+        markers.sort((a, b) => (a.time as number) - (b.time as number));
+        markersPluginRef.current.setMarkers(markers);
+      } else {
+        markersPluginRef.current.setMarkers([]);
+      }
+    }
+
+    setTimeout(tick, 80);
+  }, [data, toggles.zigzag, toggles.labels]);
+
+  useEffect(() => {
+    setTimeout(tick, 50);
+  }, [sessions, toggles.sessions, toggles.zones, toggles.ob, toggles.fvg, toggles.d1Zones, toggles.w1Zones, toggles.zonesW1, toggles.zonesD1, toggles.zones4h, toggles.zones1h, mtfZones, data, computedOBs, computedFVGs]);
+
+  // ── Effect 3: S/R price lines ──────────────────────────────────────────────
+  useEffect(() => {
+    if (!candleSeriesRef.current) return;
+
+    srPriceLinesRef.current.forEach(line => {
+      try { candleSeriesRef.current?.removePriceLine(line); } catch {}
+    });
+    srPriceLinesRef.current = [];
+
+    if (!srLevels?.length) return;
+
+    const candles = data?.candles;
+    const currentPrice = candles && candles.length > 0
+      ? candles[candles.length - 1].close
+      : null;
+
+    if (!currentPrice) return;
+
+    const tfEnabled: Record<string, boolean> = {
+      '15m': toggles.sr15m,
+      '1h':  toggles.sr1h,
+      '4h':  toggles.sr4h,
+      'd1':  toggles.d1SR,
+      'w1':  toggles.w1SR,
+    };
+
+    (['15m', '1h', '4h', 'd1', 'w1'] as const).forEach(tf => {
+      if (!tfEnabled[tf]) return;
+
+      const cfg = SR_TF_CONFIG[tf];
+      const tfLevels = srLevels.filter(l => l.timeframe === tf);
+
+      const nearby = tfLevels.filter(l =>
+        Math.abs(l.price - currentPrice) / currentPrice <= cfg.proximity
+      );
+
+      const resistance = nearby
+        .filter(l => l.price >= currentPrice)
+        .sort((a, b) => Math.abs(a.price - currentPrice) - Math.abs(b.price - currentPrice))
+        .slice(0, cfg.maxEach);
+
+      const support = nearby
+        .filter(l => l.price < currentPrice)
+        .sort((a, b) => Math.abs(a.price - currentPrice) - Math.abs(b.price - currentPrice))
+        .slice(0, cfg.maxEach);
+
+      [...resistance, ...support].forEach(level => {
+        const hit   = confluencePrices?.get(level.price);
+        const isC   = !!hit;
+        const tags  = isC ? ['⚡', hit!.has_ob ? 'OB' : '', hit!.has_fvg ? 'FVG' : ''].filter(Boolean).join(' ') : '';
+        const line  = candleSeriesRef.current!.createPriceLine({
+          price:            level.price,
+          color:            isC ? '#f59e0b' : SR_COLORS[level.kind],
+          lineWidth:        isC ? 2 : (tf === 'w1' || tf === 'd1' ? 3 : tf === '4h' ? 2 : 1),
+          lineStyle:        LineStyle.Solid,
+          axisLabelVisible: true,
+          title:            `${tags ? tags + ' ' : ''}${TF_LABEL[tf]} ${level.kind === 'resistance' ? 'R' : 'S'}`,
+        });
+        srPriceLinesRef.current.push(line);
+      });
+    });
+  }, [srLevels, data, toggles.sr15m, toggles.sr1h, toggles.sr4h, toggles.d1SR, toggles.w1SR, confluencePrices]);
+
+    // ── Effect 4: BOS / CHOCH lines (current timeframe) ──────────────────────
+  useEffect(() => {
+    if (!candleSeriesRef.current) return;
+    bosChochLinesRef.current.forEach(line => { try { candleSeriesRef.current?.removePriceLine(line); } catch {} });
+    bosChochLinesRef.current = [];
+
+    if (!toggles.bos) return;
+
+    const recentBos   = ((data?.bos   ?? []) as any[]).slice(-2);
+    const recentChoch = ((data?.choch ?? []) as any[]).slice(-1);
+
+    recentBos.forEach((event: any) => {
+      const dir = event.direction as 'bullish' | 'bearish';
+      const line = candleSeriesRef.current!.createPriceLine({
+        price:            event.price,
+        color:            BOS_COLORS[dir],
+        lineWidth:        1,
+        lineStyle:        LineStyle.Dashed,
+        axisLabelVisible: true,
+        title:            `BOS ${dir === 'bullish' ? '↑' : '↓'}`,
+      });
+      bosChochLinesRef.current.push(line);
+    });
+
+    recentChoch.forEach((event: any) => {
+      const dir = event.direction as 'bullish' | 'bearish';
+      const line = candleSeriesRef.current!.createPriceLine({
+        price:            event.price,
+        color:            CHOCH_COLOR,
+        lineWidth:        2,
+        lineStyle:        LineStyle.Dashed,
+        axisLabelVisible: true,
+        title:            `CHOCH ${dir === 'bullish' ? '↑' : '↓'}`,
+      });
+      bosChochLinesRef.current.push(line);
+    });
+  }, [data?.bos, data?.choch, toggles.bos]);
+
+   // ── Effect 5: Live SL / TP price lines ────────────────────────────────────
+  useEffect(() => {
+    if (!candleSeriesRef.current) return;
+    slTpLinesRef.current.forEach(line => {
+      try { candleSeriesRef.current?.removePriceLine(line); } catch {}
+    });
+    slTpLinesRef.current = [];
+    if (slLine != null) {
+      const line = candleSeriesRef.current.createPriceLine({
+        price: slLine,
+        color: '#ef5350',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: 'SL',
+      });
+      slTpLinesRef.current.push(line);
+    }
+    if (tpLine != null) {
+      const line = candleSeriesRef.current.createPriceLine({
+        price: tpLine,
+        color: '#26a69a',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: 'TP',
+      });
+      slTpLinesRef.current.push(line);
+    }
+  }, [slLine, tpLine]);
+
+  // ── Effect 5: HTML overlays ────────────────────────────────────────────────
+  const overlayElements = (() => {
+    if (!chartRef.current || !candleSeriesRef.current) return null;
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const _dep = layoutTick;
+
+    const timeScale = chartRef.current.timeScale();
+    const priceSeries = candleSeriesRef.current;
+    const elements: React.JSX.Element[] = [];
+
+    if (toggles.sessions && sessions?.length) {
+      sessions.forEach((session, idx) => {
+        const style = SESSION_STYLE[session.session];
+        if (!style) return;
+        const x1 = timeScale.timeToCoordinate(session.start_time as Time);
+        const x2 = timeScale.timeToCoordinate(session.end_time as Time);
+        const y1 = priceSeries.priceToCoordinate(session.high);
+        const y2 = priceSeries.priceToCoordinate(session.low);
+        if (x1 === null || x2 === null || y1 === null || y2 === null) return;
+        const left = Math.min(x1, x2), top = Math.min(y1, y2);
+        const width = Math.abs(x2 - x1), height = Math.abs(y2 - y1);
+        if (width < 2 || height < 2) return;
+        elements.push(
+          <div key={`session-${session.session}-${idx}`} style={{
+            position: 'absolute', left, top, width, height,
+            background: style.bg,
+            borderTop: `2px solid ${style.border}`, borderBottom: `2px solid ${style.border}`,
+            borderLeft: `1px solid ${style.border}`, borderRight: `1px solid ${style.border}`,
+            boxSizing: 'border-box', pointerEvents: 'none',
+          }}>
+            <span style={{
+              position: 'absolute', top: 3, left: 4, fontSize: '9px', fontWeight: 700,
+              letterSpacing: '0.08em', color: style.textColor, fontFamily: 'monospace',
+              lineHeight: 1, userSelect: 'none',
+            }}>{style.label}</span>
+          </div>
+        );
+      });
+    }
+
+    if (toggles.zones && data?.zones?.length) {
+      const currentPrice = data.candles.length > 0
+        ? data.candles[data.candles.length - 1].close
+        : null;
+
+      const STRENGTH_MIN  = 3;
+      
+      const PROXIMITY_PCT = 0.015;
+
+      const filtered = currentPrice === null ? [] : data.zones.filter(z => {
+        
+        if (z.timeframe === "d1" && !toggles.d1Zones && timeframe !== "d1") return false;
+        if (z.timeframe === "w1" && !toggles.w1Zones && timeframe !== "w1") return false;
+        
+        
+        const withinProximity = Math.abs(z.center - currentPrice) / currentPrice <= PROXIMITY_PCT;
+        return !z.broken && z.strength >= STRENGTH_MIN && withinProximity;
+      });
+
+      const supplyZones = filtered
+        .filter(z => z.center > (currentPrice ?? 0))
+        .sort((a, b) => a.center - b.center)
+        .slice(0, 2);
+
+      const demandZones = filtered
+        .filter(z => z.center <= (currentPrice ?? 0))
+        .sort((a, b) => b.center - a.center)
+        .slice(0, 2);
+
+      [...supplyZones, ...demandZones].forEach((zone, idx) => {
+        const isSupply = currentPrice === null || zone.center > currentPrice;
+        const style = isSupply ? ZONE_SUPPLY : ZONE_DEMAND;
+
+        const y1 = priceSeries.priceToCoordinate(zone.top);
+        const y2 = priceSeries.priceToCoordinate(zone.bottom);
+        if (y1 === null || y2 === null) return;
+
+        const containerWidth = containerRef.current?.clientWidth ?? 0;
+        const top = Math.min(y1, y2);
+        const height = Math.abs(y2 - y1);
+        if (height < 2) return;
+
+                // Border thickness by quality: high quality = thicker border
+        const quality = (zone as any).quality ?? 0;
+        const zStatus = (zone as any).status ?? "fresh";
+        const borderW = quality >= 70 ? '2px' : '1px';
+        const borderS = zStatus === 'tested_multiple' ? 'dashed' : 'solid';
+        const statusLabel = zStatus === 'fresh'
+          ? '● FRESH'
+          : zStatus === 'tested_once'
+          ? '◎ TESTED'
+          : zStatus === 'tested_multiple'
+          ? '○ WORN'
+          : '';
+
+        elements.push(
+          <div key={`zone-${idx}`} style={{
+            position: 'absolute', left: 0, top,
+            width: containerWidth,
+            height: Math.max(height, 3),
+            background: style.bg,
+            borderTop: `${borderW} ${borderS} ${style.border}`,
+            borderBottom: `${borderW} ${borderS} ${style.border}`,
+            boxSizing: 'border-box', pointerEvents: 'none',
+          }}>
+            <span style={{
+              position: 'absolute', top: '50%', left: 6, transform: 'translateY(-50%)',
+              fontSize: '11px', fontWeight: 800,
+              letterSpacing: '0.08em', color: style.textColor, fontFamily: 'monospace',
+              lineHeight: 1, userSelect: 'none',
+              background: 'rgba(0,0,0,0.45)', padding: '2px 6px', borderRadius: '3px',
+            }}>
+              {((zone as any).timeframe ?? '').toUpperCase()} {isSupply ? 'SUPPLY' : 'DEMAND'}{statusLabel ? ' ' + statusLabel : ''}
+            </span>
+            {quality > 0 && (
+              <span style={{
+                position: 'absolute', top: 2, right: 6, fontSize: '7px', fontWeight: 600,
+                color: style.textColor, fontFamily: 'monospace', lineHeight: 1,
+                userSelect: 'none', opacity: 0.7,
+              }}>
+                Q{quality}
+              </span>
+            )}
+          </div>
+        );
+      });
+    }
+    
+    // ── MTF Zone overlays (W1 / D1 / 4H / 1H) ────────────────────────────
+    const MTF_LAYERS: [string, keyof ToggleState, any[]][] = [
+      ['w1', 'zonesW1', mtfZones?.zones_w1 ?? []],
+      ['d1', 'zonesD1', mtfZones?.zones_d1 ?? []],
+      ['4h', 'zones4h', mtfZones?.zones_4h ?? []],
+      ['1h', 'zones1h', mtfZones?.zones_1h ?? []],
+    ];
+
+    const PROXIMITY_MTF = 0.025;
+
+    // Build a flat list of all active nearby zones so we can detect confluence
+    const allActiveNearby: { tf: string; top: number; bottom: number; center: number; isSupply: boolean }[] = [];
+    for (const [tf, toggleKey, zoneList] of MTF_LAYERS) {
+      if (!toggles[toggleKey] || !zoneList.length || currentPrice === null) continue;
+      (zoneList as any[]).filter(z =>
+        !z.broken &&
+        z.strength >= 2 &&
+        Math.abs(z.center - currentPrice) / currentPrice <= PROXIMITY_MTF
+      ).forEach((z: any) => {
+        allActiveNearby.push({ tf, top: z.top, bottom: z.bottom, center: z.center, isSupply: z.center > currentPrice });
+      });
+    }
+
+    // Confluence detection: group zones that overlap across different TFs
+    const rendered = new Set<string>();
+
+    for (const [tf, toggleKey, zoneList] of MTF_LAYERS) {
+      if (!toggles[toggleKey] || !zoneList.length || currentPrice === null) continue;
+      const tfColors = MTF_ZONE_COLORS[tf];
+      if (!tfColors) continue;
+      const baseOpacity = MTF_TF_OPACITY[tf] ?? 0.75;
+
+      // When higher-TF zones are present nearby, fade lower-TF ones further
+      const higherPresent = tf === '1h'
+        ? allActiveNearby.some(z => z.tf === 'w1' || z.tf === 'd1')
+        : tf === '4h'
+        ? allActiveNearby.some(z => z.tf === 'w1')
+        : false;
+      const opacityMult = higherPresent ? 0.5 : 1.0;
+      const finalOpacity = baseOpacity * opacityMult;
+
+      const nearby = (zoneList as any[]).filter(z =>
+        !z.broken &&
+        z.strength >= 2 &&
+        Math.abs(z.center - currentPrice) / currentPrice <= PROXIMITY_MTF
+      );
+
+      const supply = nearby
+        .filter(z => z.center > currentPrice)
+        .sort((a: any, b: any) => a.center - b.center)
+        .slice(0, 2);
+      const demand = nearby
+        .filter(z => z.center <= currentPrice)
+        .sort((a: any, b: any) => b.center - a.center)
+        .slice(0, 2);
+
+      [...supply, ...demand].forEach((zone: any, idx: number) => {
+        const isSupply = zone.center > currentPrice;
+        const zoneKey = `${isSupply ? 's' : 'd'}-${Math.round(zone.center * 1e4)}`;
+
+        // Confluence: find other TFs that overlap this zone
+        const confluenceTFs = allActiveNearby
+          .filter(other =>
+            other.tf !== tf &&
+            other.isSupply === isSupply &&
+            other.top >= zone.bottom &&
+            other.bottom <= zone.top
+          )
+          .map(o => o.tf.toUpperCase());
+        const isConfluence = confluenceTFs.length > 0;
+
+        // Skip if already rendered as part of a higher-TF confluence
+        if (rendered.has(zoneKey)) return;
+        rendered.add(zoneKey);
+
+        const y1 = priceSeries.priceToCoordinate(zone.top);
+        const y2 = priceSeries.priceToCoordinate(zone.bottom);
+        if (y1 === null || y2 === null) return;
+        const containerWidth = containerRef.current?.clientWidth ?? 0;
+        const top = Math.min(y1, y2);
+        const height = Math.abs(y2 - y1);
+        if (height < 2) return;
+
+        // Confluence zones get a slightly stronger border
+        const borderStyle = isConfluence ? 'solid' : 'dashed';
+        const borderWidth  = isConfluence ? '2px' : '1px';
+
+        const statusDot = zone.status === 'fresh' ? ' ●' : zone.status === 'tested_once' ? ' ◎' : zone.status === 'tested_multiple' ? ' ○' : '';
+        const confluenceLabel = isConfluence
+          ? `${tfColors.label}+${confluenceTFs.join('+')} ${isSupply ? 'S' : 'D'}${statusDot}`
+          : `${tfColors.label} ${isSupply ? 'S' : 'D'}${statusDot}`;
+
+        elements.push(
+          <div key={`mtf-${tf}-${isSupply ? 's' : 'd'}-${idx}`} style={{
+            position: 'absolute', left: 0, top,
+            width: containerWidth,
+            height: Math.max(height, 3),
+            background: tfColors.bg.replace('0.12)', `${0.12 * finalOpacity})`),
+            borderTop:    `${borderWidth} ${borderStyle} ${tfColors.border}`,
+            borderBottom: `${borderWidth} ${borderStyle} ${tfColors.border}`,
+            boxSizing: 'border-box', pointerEvents: 'none',
+            opacity: finalOpacity,
+          }}>
+            <span style={{
+              position: 'absolute', top: 2, right: 6,
+              fontSize: '11px', fontWeight: isConfluence ? 900 : 800,
+              letterSpacing: '0.08em', color: tfColors.border,
+              fontFamily: 'monospace', lineHeight: 1,
+              userSelect: 'none',
+              background: 'rgba(0,0,0,0.45)', padding: '2px 6px', borderRadius: '3px',
+            }}>
+              {confluenceLabel}
+            </span>
+          </div>
+        );
+      });
+    }
+
+
+    if (toggles.ob && computedOBs.length) {
+      const containerWidth = containerRef.current?.clientWidth ?? 0;
+      computedOBs.forEach((ob, idx) => {
+        const style = ob.type === 'bullish' ? OB_BULLISH : OB_BEARISH;
+        const y1 = priceSeries.priceToCoordinate(ob.top);
+        const y2 = priceSeries.priceToCoordinate(ob.bottom);
+        if (y1 === null || y2 === null) return;
+        const top    = Math.min(y1, y2);
+        const height = Math.abs(y2 - y1);
+        if (height < 2) return;
+        elements.push(
+          <div key={`ob-${ob.type}-${idx}`} style={{
+            position: 'absolute', left: 0, top,
+            width: containerWidth, height: Math.max(height, 4),
+            background: style.bg,
+            borderTop:    `1px solid ${style.border}`,
+            borderBottom: `1px solid ${style.border}`,
+            boxSizing: 'border-box', pointerEvents: 'none',
+          }}>
+            <span style={{
+              position: 'absolute', top: 2, left: 4, fontSize: '8px', fontWeight: 700,
+              letterSpacing: '0.06em', color: style.textColor, fontFamily: 'monospace',
+              lineHeight: 1, userSelect: 'none',
+            }}>{style.label}</span>
+          </div>
+        );
+      });
+    }
+
+    if (toggles.fvg && computedFVGs.length) {
+      const containerWidth = containerRef.current?.clientWidth ?? 0;
+      computedFVGs.forEach((fvg, idx) => {
+        const style = fvg.type === 'bullish' ? FVG_BULLISH : FVG_BEARISH;
+        const y1 = priceSeries.priceToCoordinate(fvg.top);
+        const y2 = priceSeries.priceToCoordinate(fvg.bottom);
+        if (y1 === null || y2 === null) return;
+        const top    = Math.min(y1, y2);
+        const height = Math.abs(y2 - y1);
+        if (height < 2) return;
+        elements.push(
+          <div key={`fvg-${fvg.type}-${idx}`} style={{
+            position: 'absolute', left: 0, top,
+            width: containerWidth, height: Math.max(height, 3),
+            background: style.bg,
+            borderTop:    `1px dashed ${style.border}`,
+            borderBottom: `1px dashed ${style.border}`,
+            boxSizing: 'border-box', pointerEvents: 'none',
+          }}>
+            <span style={{
+              position: 'absolute', top: 2, left: 4, fontSize: '8px', fontWeight: 700,
+              letterSpacing: '0.06em', color: style.textColor, fontFamily: 'monospace',
+              lineHeight: 1, userSelect: 'none',
+            }}>{style.label}</span>
+          </div>
+        );
+      });
+    }
+
+        // ── Fibonacci retracement levels (4H swing, visible on all timeframes) ────
+    if (toggles.fib && fibLevels?.length) {
+      const containerWidth = containerRef.current?.clientWidth ?? 0;
+
+      // Golden zone fill: 38.2% → 61.8%
+      const f382 = fibLevels.find(f => f.pct === 38.2);
+      const f618 = fibLevels.find(f => f.pct === 61.8);
+      if (f382 && f618) {
+        const y1 = priceSeries.priceToCoordinate(f382.price);
+        const y2 = priceSeries.priceToCoordinate(f618.price);
+        if (y1 !== null && y2 !== null) {
+          elements.push(
+            <div key="fib-golden-zone" style={{
+              position: 'absolute', left: 0,
+              top: Math.min(y1, y2),
+              width: containerWidth,
+              height: Math.max(Math.abs(y2 - y1), 2),
+              background: 'rgba(251,191,36,0.06)',
+              pointerEvents: 'none',
+            }} />
+          );
+        }
+      }
+
+      // Individual level lines + labels
+      fibLevels.forEach((fib, idx) => {
+        const y = priceSeries.priceToCoordinate(fib.price);
+        if (y === null) return;
+
+        const isKey     = fib.isKey;
+        const isMid     = fib.pct === 50;
+        const isExt     = fib.isExt ?? false;
+        const lineColor = isExt
+          ? 'rgba(251,191,36,0.35)'
+          : isKey
+          ? 'rgba(251,191,36,0.80)'
+          : isMid
+          ? 'rgba(251,191,36,0.45)'
+          : 'rgba(255,255,255,0.18)';
+        const labelColor = isExt
+          ? 'rgba(251,191,36,0.55)'
+          : isKey
+          ? 'rgba(251,191,36,0.95)'
+          : isMid
+          ? 'rgba(251,191,36,0.60)'
+          : 'rgba(255,255,255,0.30)';
+
+        elements.push(
+          <div key={`fib-${idx}`} style={{
+            position: 'absolute', left: 0, top: y,
+            width: containerWidth, height: 0,
+            borderTop: isExt
+              ? `1px dotted ${lineColor}`
+              : isKey
+              ? `1px solid ${lineColor}`
+              : `1px dashed ${lineColor}`,
+            pointerEvents: 'none',
+          }}>
+            <span style={{
+              position: 'absolute', right: 54, top: -9,
+              fontSize: '7.5px',
+              fontWeight: isKey ? 700 : 400,
+              color: labelColor,
+              fontFamily: 'monospace',
+              userSelect: 'none',
+              letterSpacing: '0.04em',
+              whiteSpace: 'nowrap',
+            }}>
+              {fib.label}
+            </span>
+          </div>
+        );
+      });
+ 
+    }
+
+    // ── D1 Fibonacci retracement levels ────────────────────────────────────────
+    if (toggles.fibD1 && fibD1Levels?.length) {
+      const containerWidth = containerRef.current?.clientWidth ?? 0;
+
+      const d1f382 = fibD1Levels.find(f => f.pct === 38.2);
+      const d1f618 = fibD1Levels.find(f => f.pct === 61.8);
+      if (d1f382 && d1f618) {
+        const y1 = priceSeries.priceToCoordinate(d1f382.price);
+        const y2 = priceSeries.priceToCoordinate(d1f618.price);
+        if (y1 !== null && y2 !== null) {
+          elements.push(
+            <div key="fib-d1-golden-zone" style={{
+              position: 'absolute', left: 0,
+              top: Math.min(y1, y2),
+              width: containerWidth,
+              height: Math.max(Math.abs(y2 - y1), 2),
+              background: 'rgba(56,189,248,0.06)',
+              pointerEvents: 'none',
+            }} />
+          );
+        }
+      }
+
+      fibD1Levels.forEach((fib, idx) => {
+        const y = priceSeries.priceToCoordinate(fib.price);
+        if (y === null) return;
+
+        const isKey  = fib.isKey;
+        const isMid  = fib.pct === 50;
+        const isExt  = fib.isExt ?? false;
+        const lineColor = isExt
+          ? 'rgba(56,189,248,0.35)'
+          : isKey
+          ? 'rgba(56,189,248,0.80)'
+          : isMid
+          ? 'rgba(56,189,248,0.45)'
+          : 'rgba(255,255,255,0.15)';
+        const labelColor = isExt
+          ? 'rgba(56,189,248,0.55)'
+          : isKey
+          ? 'rgba(56,189,248,0.95)'
+          : isMid
+          ? 'rgba(56,189,248,0.60)'
+          : 'rgba(255,255,255,0.28)';
+
+        elements.push(
+          <div key={`fib-d1-${idx}`} style={{
+            position: 'absolute', left: 0, top: y,
+            width: containerWidth, height: 0,
+            borderTop: isExt
+              ? `1px dotted ${lineColor}`
+              : isKey
+              ? `1px solid ${lineColor}`
+              : `1px dashed ${lineColor}`,
+            pointerEvents: 'none',
+          }}>
+            <span style={{
+              position: 'absolute', right: 54, top: -9,
+              fontSize: '7.5px',
+              fontWeight: isKey ? 700 : 400,
+              color: labelColor,
+              fontFamily: 'monospace',
+              userSelect: 'none',
+              letterSpacing: '0.04em',
+              whiteSpace: 'nowrap',
+            }}>
+              D1 {fib.label}
+            </span>
+          </div>
+        );
+      });
+    }
+
+    return elements;
+  })();
+
+  return (
+    <div className="relative w-full h-full overflow-hidden" style={{ background: '#0a0e17' }}>
+      <div ref={containerRef} className="absolute inset-0 z-0" />
+      <div className="absolute inset-0 pointer-events-none overflow-hidden" style={{ zIndex: 20 }}>
+        {overlayElements}
+      </div>
+    </div>
+  );
+}
