@@ -66,6 +66,7 @@ interface TradingChartProps {
     zones_1h: any[];
   };
   confluencePrices?: Map<number, import("@/hooks/use-trading-api").ConfluenceHit>;
+  indicators?: import("@/hooks/use-trading-api").IndicatorsData;
 }
 
 // ── Exported so TradeTeller can reuse them without duplicating logic ──────────
@@ -270,7 +271,7 @@ export function detectFVGs(candles: any[], currentPrice: number, isD1 = false): 
   }));
 }
 
-export function TradingChart({ data, srLevels, sessions, toggles, bosChochData, onPriceClick, slLine, tpLine, fibLevels, fibD1Levels, timeframe, mtfZones, confluencePrices }: TradingChartProps) {
+export function TradingChart({ data, srLevels, sessions, toggles, bosChochData, onPriceClick, slLine, tpLine, fibLevels, fibD1Levels, timeframe, mtfZones, confluencePrices, indicators }: TradingChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -281,6 +282,8 @@ export function TradingChart({ data, srLevels, sessions, toggles, bosChochData, 
   const slTpLinesRef = useRef<ReturnType<ISeriesApi<'Candlestick'>['createPriceLine']>[]>([]);
   
   const markersPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const emaFastSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const emaSlowSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const onPriceClickRef = useRef(onPriceClick);
   useEffect(() => { onPriceClickRef.current = onPriceClick; }, [onPriceClick]);
 
@@ -478,9 +481,41 @@ containerRef.current?.addEventListener('click', handleChartClick);
     setTimeout(tick, 80);
   }, [data, toggles.zigzag, toggles.labels]);
 
-  useEffect(() => {
+    useEffect(() => {
     setTimeout(tick, 50);
   }, [sessions, toggles.sessions, toggles.zones, toggles.ob, toggles.fvg, toggles.d1Zones, toggles.w1Zones, toggles.zonesW1, toggles.zonesD1, toggles.zones4h, toggles.zones1h, mtfZones, data, computedOBs, computedFVGs]);
+
+  // ── Effect 2b: EMA 21 / EMA 50 overlays ─────────────────────────────────────
+  useEffect(() => {
+    if (!chartRef.current) return;
+
+    if (!emaFastSeriesRef.current) {
+      emaFastSeriesRef.current = chartRef.current.addSeries(LineSeries, {
+        color: '#42a5f5', lineWidth: 2.0, lineStyle: LineStyle.Solid,
+        crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
+      });
+    }
+    if (!emaSlowSeriesRef.current) {
+      emaSlowSeriesRef.current = chartRef.current.addSeries(LineSeries, {
+        color: '#ffa726', lineWidth: 2.0, lineStyle: LineStyle.Solid,
+        crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
+      });
+    }
+
+    const fastPoints = toggles.ema21 ? (indicators?.ema_fast ?? []) : [];
+    const slowPoints = toggles.ema50 ? (indicators?.ema_slow ?? []) : [];
+
+    try {
+      emaFastSeriesRef.current.setData(
+        fastPoints.map(p => ({ time: p.time as Time, value: p.value })) as any
+      );
+    } catch {}
+    try {
+      emaSlowSeriesRef.current.setData(
+        slowPoints.map(p => ({ time: p.time as Time, value: p.value })) as any
+      );
+    } catch {}
+  }, [indicators, toggles.ema21, toggles.ema50]);
 
   // ── Effect 3: S/R price lines ──────────────────────────────────────────────
   useEffect(() => {

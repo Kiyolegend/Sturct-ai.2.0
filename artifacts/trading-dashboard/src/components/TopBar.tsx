@@ -30,6 +30,9 @@ export interface ToggleState {
   zonesD1: boolean;  // Daily zones  — blue
   zones4h: boolean;  // 4H zones     — green
   zones1h: boolean;  // 1H zones     — yellow
+  ema21: boolean;    // EMA 21 (fast) — blue line overlay
+  ema50: boolean;    // EMA 50 (slow) — orange line overlay
+  rsi: boolean;      // RSI 14 — separate pane below chart
 }
 
 type TrendDir = "bullish" | "bearish" | "neutral";
@@ -384,6 +387,7 @@ export function TopBar({ timeframe, setTimeframe, toggles, setToggles, symbol = 
             )}
             title="Toggle Fibonacci retracement levels (4H swing — shows on all timeframes)">FIB</button>
 
+          
           <button onClick={() => toggleLayer('fibD1')} aria-pressed={toggles.fibD1}
             className={cn("px-2 py-1.5 rounded-md text-[10px] font-bold transition-colors",
               toggles.fibD1
@@ -391,6 +395,32 @@ export function TopBar({ timeframe, setTimeframe, toggles, setToggles, symbol = 
                 : "text-white/40 hover:text-white/70"
             )}
             title="Toggle Fibonacci retracement levels (D1 swing — shows on all timeframes)">D1F</button>
+        </div>
+
+        <div className="flex items-center gap-1 bg-[#161e2c] rounded-lg p-1 border border-white/5">
+          <button onClick={() => toggleLayer('ema21')} aria-pressed={toggles.ema21}
+            className={cn("px-2 py-1.5 rounded-md text-[10px] font-bold transition-colors",
+              toggles.ema21
+                ? "text-blue-400 bg-blue-500/15 border border-blue-500/30"
+                : "text-white/40 hover:text-white/70"
+            )}
+            title="Toggle EMA 21 (fast)">EMA21</button>
+
+          <button onClick={() => toggleLayer('ema50')} aria-pressed={toggles.ema50}
+            className={cn("px-2 py-1.5 rounded-md text-[10px] font-bold transition-colors",
+              toggles.ema50
+                ? "text-orange-400 bg-orange-500/15 border border-orange-500/30"
+                : "text-white/40 hover:text-white/70"
+            )}
+            title="Toggle EMA 50 (slow)">EMA50</button>
+
+          <button onClick={() => toggleLayer('rsi')} aria-pressed={toggles.rsi}
+            className={cn("px-2 py-1.5 rounded-md text-[10px] font-bold transition-colors",
+              toggles.rsi
+                ? "text-violet-400 bg-violet-500/15 border border-violet-500/30"
+                : "text-white/40 hover:text-white/70"
+            )}
+            title="Toggle RSI 14 (separate pane below chart)">RSI</button>
         </div>
 
         <div className="flex items-center gap-1 bg-[#161e2c] rounded-lg p-1 border border-white/5">

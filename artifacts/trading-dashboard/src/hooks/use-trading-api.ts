@@ -99,6 +99,29 @@ export interface ZonesMTFResponse {
 
 
 
+export interface IndicatorPoint {
+  time: number;
+  value: number;
+}
+
+export interface MAState {
+  current_price: number | null;
+  ema_fast: number | null;
+  ema_slow: number | null;
+  price_vs_fast: "above" | "below" | "equal";
+  price_vs_slow: "above" | "below" | "equal";
+  fast_vs_slow: "above" | "below" | "equal";
+  cross: "golden" | "death" | null;
+  bars_since_cross: number | null;
+}
+
+export interface IndicatorsData {
+  ema_fast: IndicatorPoint[];
+  ema_slow: IndicatorPoint[];
+  rsi: IndicatorPoint[];
+  ma_state: MAState;
+}
+
 export interface TradingAnalysisResponse {
   symbol: string;
   interval: string;
@@ -112,6 +135,7 @@ export interface TradingAnalysisResponse {
   trendlines: TrendlinesData;
   zones: Zone[];
   current_price?: number | null;
+  indicators?: IndicatorsData;
 }
 
 export interface SRLevel {
@@ -365,15 +389,16 @@ export function useMT5Status() {
   });
 }
 
-export function useTradingAnalysis(symbol: string = "USD/JPY", interval: string = "5m", outputsize: number = 500) {
+export function useTradingAnalysis(symbol: string = "USD/JPY", interval: string = "5m", outputsize: number = 500, indicators: boolean = false) {
   return useQuery<TradingAnalysisResponse, Error>({
-    queryKey: ["trading-analysis", symbol, interval, outputsize],
+    queryKey: ["trading-analysis", symbol, interval, outputsize, indicators],
     queryFn: async () => {
       const params = new URLSearchParams({
         symbol,
         interval,
         outputsize: outputsize.toString(),
       });
+      if (indicators) params.set("indicators", "true");
 
       const res = await fetch(`/trading-api/analysis?${params.toString()}`, { cache: "no-store" });
 

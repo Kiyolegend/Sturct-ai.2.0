@@ -5,6 +5,7 @@ import { HeatmapSidebar } from "@/components/HeatmapSidebar";
 import { TradePanel } from "@/components/TradePanel";
 import { NewsPanel } from "@/components/NewsPanel";
 import { TopDownToolkit } from "@/components/TopDownToolkit";
+import { RSIPane } from "@/components/RSIPane";
 
 import { useTradingAnalysis, useSRLevels, useMTFBias, usePatternSummary, useSessions, useBrokerTime, useZonesMTF, type ActiveSetup, useConfluence, type ConfluenceHit } from "@/hooks/use-trading-api";
 import { Loader2, AlertTriangle, RefreshCw, Moon } from "lucide-react";
@@ -51,6 +52,9 @@ export function Dashboard({ activeSetups = [], symbol, setSymbol }: { activeSetu
     zonesD1:  true,   // Daily zones ON by default  — most important
     zones4h:  true,   // 4H zones ON by default
     zones1h:  false,  // 1H zones OFF by default — enable manually
+    ema21:    false,
+    ema50:    false,
+    rsi:      false,
   });
 
   
@@ -60,7 +64,8 @@ export function Dashboard({ activeSetups = [], symbol, setSymbol }: { activeSetu
   const { data: brokerTimeData } = useBrokerTime();
   const brokerNow = brokerTimeData?.broker_time ?? 0;
 
-  const { data, isLoading, error, refetch, isRefetching } = useTradingAnalysis(symbol, timeframe, CANDLE_LIMITS[timeframe] ?? 500);
+  const needsIndicators = toggles.ema21 || toggles.ema50 || toggles.rsi;
+  const { data, isLoading, error, refetch, isRefetching } = useTradingAnalysis(symbol, timeframe, CANDLE_LIMITS[timeframe] ?? 500, needsIndicators);
   const { data: zonesMTFData } = useZonesMTF(symbol);
   const { data: srData }       = useSRLevels(symbol);
   const { data: biasData }     = useMTFBias(symbol);

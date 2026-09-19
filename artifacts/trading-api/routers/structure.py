@@ -22,10 +22,11 @@ from services.framework_checker import detect_order_blocks
 from services.atr_utils import compute_atr14
 from services.momentum_engine import compute_momentum
 from services.fvg_engine import detect_fvgs
+from services.indicator_engine import compute_ema, compute_rsi, compute_ma_state, EMA_FAST, EMA_SLOW
 router = APIRouter()
 # Health formula version — bump this when weights or components change
 HEALTH_VERSION = 1
-async def _get_full_analysis(symbol: str, interval: str, outputsize: int):
+async def _get_full_analysis(symbol: str, interval: str, outputsize: int, include_indicators: bool = False):
     
     
         
@@ -70,7 +71,15 @@ async def _get_full_analysis(symbol: str, interval: str, outputsize: int):
         "trendlines": trendlines,
         "zones": zones,
     }
-    
+
+    if include_indicators:
+        result["indicators"] = {
+            "ema_fast": compute_ema(df, EMA_FAST),
+            "ema_slow": compute_ema(df, EMA_SLOW),
+            "rsi": compute_rsi(df),
+            "ma_state": compute_ma_state(df),
+        }
+
     return result
 
 @router.get("/structure")
@@ -271,10 +280,11 @@ async def get_full_analysis(
     symbol: str = Query(default="USD/JPY"),
     interval: str = Query(default="5m"),
     outputsize: int = Query(default=200, ge=10, le=5000),
+    indicators: bool = Query(default=False),
 ):
     """Full analysis endpoint — returns everything in one call for efficiency."""
     try:
-        result = await _get_full_analysis(symbol, interval, outputsize)
+        result = await _get_full_analysis(symbol, interval, outputsize, include_indicators=indicators)
         return {"symbol": symbol, "interval": interval, **result}
     except ValueError as e:
         raise HTTPException(status_code=503, detail=str(e))

@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { AlertTriangle, X, CheckCircle, Loader2 } from "lucide-react";
-
+import { pipSize } from "./TradingChart";
 // FIX 1 — relative URL (was "http://localhost:8001/trading-api")
 const API = "/trading-api";
 // FIX 2 — threshold >50 matches TradingChart/FrameworkPanel (was >10); DEC added
-const PIP = (price: number) => price > 50 ? 0.01 : 0.0001;
+const PIP = pipSize;
 const DEC = (price: number) => price > 50 ? 3 : 5;
 const RISK_PER_PIP = (lots: number, price: number) =>
   price > 50 ? (lots * 100000 * 0.01) / price : lots * 100000 * 0.0001;
