@@ -398,24 +398,31 @@ export function Dashboard({ activeSetups = [], symbol, setSymbol }: { activeSetu
             </div>
           ) : (
             <>
-              <TradingChart
-                data={data}
-                srLevels={srData?.levels}
-                sessions={sessionsData?.sessions}
-                toggles={toggles}
-                onPriceClick={setClickedPrice}
-                slLine={slLine}
-                tpLine={tpLine}
-                fibLevels={fibLevels}
-                fibD1Levels={fibD1Levels}
-                timeframe={timeframe}
-                mtfZones={zonesMTFData}
-                confluencePrices={confluencePrices}
-                indicators={data?.indicators}
-              />
-              {toggles.rsi && (
-                <RSIPane rsiData={data?.indicators?.rsi} />
-              )}
+              
+              <div className="flex flex-col h-full">
+                <div className="flex-1 min-h-0">
+                  <TradingChart
+                    data={data}
+                    srLevels={srData?.levels}
+                    sessions={sessionsData?.sessions}
+                    toggles={toggles}
+                    onPriceClick={setClickedPrice}
+                    slLine={slLine}
+                    tpLine={tpLine}
+                    fibLevels={fibLevels}
+                    fibD1Levels={fibD1Levels}
+                    timeframe={timeframe}
+                    mtfZones={zonesMTFData}
+                    confluencePrices={confluencePrices}
+                    indicators={data?.indicators}
+                  />
+                </div>
+                {toggles.rsi && (
+                  <div className="flex-none">
+                    <RSIPane rsiData={data?.indicators?.rsi} />
+                  </div>
+                )}
+              </div>
 
 
                             {!goldenZoneAlert && pipsToZone !== null && pipsToZone <= (symbol.includes("BTC") ? 500 : 80) && (
