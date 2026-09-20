@@ -411,7 +411,11 @@ export function Dashboard({ activeSetups = [], symbol, setSymbol }: { activeSetu
                 timeframe={timeframe}
                 mtfZones={zonesMTFData}
                 confluencePrices={confluencePrices}
+                indicators={data?.indicators}
               />
+              {toggles.rsi && (
+                <RSIPane rsiData={data?.indicators?.rsi} />
+              )}
 
 
                             {!goldenZoneAlert && pipsToZone !== null && pipsToZone <= (symbol.includes("BTC") ? 500 : 80) && (
