@@ -4,7 +4,6 @@ import { TradingChart, type FibLevel } from "@/components/TradingChart";
 import { HeatmapSidebar } from "@/components/HeatmapSidebar";
 import { TradePanel } from "@/components/TradePanel";
 import { NewsPanel } from "@/components/NewsPanel";
-import { TopDownToolkit } from "@/components/TopDownToolkit";
 import { RSIPane } from "@/components/RSIPane";
 
 import { useTradingAnalysis, useSRLevels, useMTFBias, usePatternSummary, useSessions, useBrokerTime, useZonesMTF, type ActiveSetup, useConfluence, type ConfluenceHit } from "@/hooks/use-trading-api";
@@ -30,7 +29,6 @@ const CANDLE_LIMITS: Record<string, number> = {
 
 export function Dashboard({ activeSetups = [], symbol, setSymbol }: { activeSetups?: ActiveSetup[]; symbol: string; setSymbol: (s: string) => void }) {
   const [timeframe, setTimeframe] = useState("5m");
-  const [showToolkit, setShowToolkit] = useState(false);
   const [toggles, setToggles] = useState<ToggleState>({
     zigzag:   true,
     labels:   true,
@@ -48,9 +46,9 @@ export function Dashboard({ activeSetups = [], symbol, setSymbol }: { activeSetu
     d1SR:     true,
     w1Zones:  false,
     w1SR:     true,
-    zonesW1:  true,   // Weekly zones ON by default — most important
-    zonesD1:  true,   // Daily zones ON by default  — most important
-    zones4h:  true,   // 4H zones ON by default
+    zonesW1:  false,   // Weekly zones ON by default — most important
+    zonesD1:  false,   // Daily zones ON by default  — most important
+    zones4h:  false,   // 4H zones ON by default
     zones1h:  false,  // 1H zones OFF by default — enable manually
     ema21:    false,
     ema50:    false,
@@ -329,21 +327,9 @@ export function Dashboard({ activeSetups = [], symbol, setSymbol }: { activeSetu
         patternd1={patternData?.pattern_d1}
         patternw1={patternData?.pattern_w1}
         activeSetups={activeSetups}
-        showToolkit={showToolkit}
-        onToggleToolkit={() => setShowToolkit(t => !t)}
-      />
-      {showToolkit && (
-        <TopDownToolkit
-          symbol={symbol}
-          biasData={biasData}
-          zonesMTFData={zonesMTFData}
-          srData={srData}
-          confluenceData={confluenceData}
-          currentPrice={data?.candles?.at(-1)?.close ?? 0}
-          toggles={toggles}
-          onClose={() => setShowToolkit(false)}
+        
         />
-      )}
+      
 
       <div className="flex-1 flex flex-row min-h-0">
         <HeatmapSidebar activeSymbol={symbol} onSelectSymbol={setSymbol}>
@@ -476,7 +462,7 @@ export function Dashboard({ activeSetups = [], symbol, setSymbol }: { activeSetu
                 </div>
               )}
 
-              <div className={`absolute bottom-6 right-6 px-3 py-1.5 backdrop-blur-md border rounded-full flex items-center space-x-2 shadow-lg z-50 ${wsConnected ? "bg-green-500/10 border-green-500/30" : "bg-red-500/10 border-red-500/30"}`}>
+                <div className={`absolute ${toggles.rsi ? "bottom-[112px]" : "bottom-6"} right-6 px-3 py-1.5 backdrop-blur-md border rounded-full flex items-center space-x-2 shadow-lg z-50 ${wsConnected ? "bg-green-500/10 border-green-500/30" : "bg-red-500/10 border-red-500/30"}`}>
                 <div className={`w-2 h-2 rounded-full ${wsConnected ? "bg-green-400 animate-pulse" : "bg-red-400"}`} />
                 <span className={`text-[10px] font-mono uppercase tracking-wider ${wsConnected ? "text-green-400" : "text-red-400"}`}>
                   {wsConnected ? "LIVE" : "OFFLINE"}

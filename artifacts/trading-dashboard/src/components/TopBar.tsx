@@ -56,7 +56,6 @@ interface TopBarProps {
   patternd1?:  CandlePattern | null;
   patternw1?:  CandlePattern | null;
   activeSetups?: ActiveSetup[];
-  showToolkit?: boolean;
   onToggleToolkit?: () => void;
 }
 
@@ -567,25 +566,7 @@ export function TopBar({ timeframe, setTimeframe, toggles, setToggles, symbol = 
             </div>
           </div>
         )}
-        <button
-          onClick={onToggleToolkit}
-          className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded border text-[10px] font-bold uppercase tracking-wider transition-colors ${
-            showToolkit
-              ? "bg-amber-500/20 border-amber-500/40 text-amber-300"
-              : "bg-primary/10 border-primary/30 text-primary hover:bg-primary/20"
-          }`}
-        >
-          ⊞ Toolkit
-        </button>
-
-        <a
-          href="/analysis"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded border text-[10px] font-bold uppercase tracking-wider bg-primary/10 border-primary/30 text-primary hover:bg-primary/20 transition-colors"
-        >
-          ⊞ Analysis
-        </a>
+        
         <a
           href="/choch"
           target="_blank"

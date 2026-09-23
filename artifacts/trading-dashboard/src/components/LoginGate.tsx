@@ -15,7 +15,7 @@ const inputStyle: React.CSSProperties = {
   fontSize: 12,
 };
 
-export function LoginGate({ children, showPanic = true }: { children: React.ReactNode; showPanic?: boolean }) {
+export function LoginGate({ children, showPanic = false }: { children: React.ReactNode; showPanic?: boolean }) {
   const [unlocked, setUnlocked] = useState(() => isUnlocked());
   const [password, setPassword] = useState("");
   const [totp, setTotp] = useState("");

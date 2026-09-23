@@ -5,7 +5,6 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Dashboard } from "@/pages/Dashboard";
 import { MobileDashboard } from "@/pages/MobileDashboard";
-import { AnalysisPage } from "@/pages/AnalysisPage";
 import { ChochMonitor } from "@/components/ChochMonitor";
 import NotFound from "@/pages/not-found";
 import { ChochMonitorPage } from "@/pages/ChochMonitorPage";
@@ -51,7 +50,6 @@ function Router({ symbol, setSymbol }: {
             : <Dashboard symbol={symbol} setSymbol={setSymbol} />
         }
       </Route>
-      <Route path="/analysis" component={AnalysisPage} />
       <Route path="/choch" component={ChochMonitorPage} />
       <Route path="/auto-trade" component={AutoTradePage} />
       <Route path="/structure" component={StructurePage} />

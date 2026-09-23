@@ -120,6 +120,7 @@ TIMEFRAME_MAP = {
 # ---------------------------------------------------------------------------
 
 PUSH_URL = f"{API_BASE_URL}/trading-api/mt5/push"
+SPECS_PUSH_URL = f"{API_BASE_URL}/trading-api/mt5/push-specs"
 STATUS_URL = f"{API_BASE_URL}/trading-api/mt5/status"
 ORDERS_URL = f"{API_BASE_URL}/trading-api/trade/pending"
 RESULT_URL = f"{API_BASE_URL}/trading-api/trade/result"
@@ -521,10 +522,30 @@ def push_timeframe(
     return False
 
 
+def push_symbol_specs(sym: dict) -> None:
+    """Best-effort push of live contract size / tick value / tick size.
+    Wrapped so a failure here can never affect candle pushing or trading."""
+    try:
+        info = mt5.symbol_info(sym["mt5_name"])
+        if info is None:
+            return
+        payload = {
+            "symbol": sym["api_symbol"],
+            "contract_size": float(info.trade_contract_size),
+            "tick_value": float(info.trade_tick_value),
+            "tick_size": float(info.trade_tick_size),
+        }
+        _session.post(SPECS_PUSH_URL, json=payload, timeout=10)
+    except Exception as exc:
+        print(f"[SPECS] push error for {sym['mt5_name']}: {exc}")
+
+
 def push_symbol(sym: dict) -> int:
     mt5_name = sym["mt5_name"]
     api_symbol = sym["api_symbol"]
     success = 0
+
+    push_symbol_specs(sym)
 
     for tf_name, mt5_tf in TIMEFRAME_MAP.items():
         candles = fetch_candles(

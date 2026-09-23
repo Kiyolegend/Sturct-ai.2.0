@@ -12,7 +12,7 @@ import os
 import time
 import asyncio
 from ws_manager import broadcast
-
+from services.symbol_specs_store import store_specs, get_specs
 
 
 from services.mt5_store import store_candles, status as mt5_status, get_latest_timestamp, VALID_INTERVALS
@@ -38,6 +38,11 @@ class MT5PushPayload(BaseModel):
     interval: str    # "5m" | "15m" | "1h" | "4h"
     candles: list[OHLCCandle]
 
+class SymbolSpecsPayload(BaseModel):
+    symbol: str
+    contract_size: float
+    tick_value: float
+    tick_size: float
 
 @router.post("/mt5/push")
 async def mt5_push(
@@ -96,3 +101,22 @@ async def mt5_server_time():
     """Returns last broker candle timestamp. Frontend uses this instead of Date.now()."""
     ts = get_latest_timestamp()
     return {"broker_time": ts if ts is not None else int(time.time())}
+
+@router.post("/mt5/push-specs")
+async def mt5_push_specs(
+    payload: SymbolSpecsPayload,
+    x_mt5_secret: str = Header(default=""),
+):
+    print(f"[DEBUG] got={x_mt5_secret!r} expected={MT5_SECRET!r}")
+    if MT5_SECRET and x_mt5_secret != MT5_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid MT5 bridge secret")
+    store_specs(payload.symbol, payload.contract_size, payload.tick_value, payload.tick_size)
+    return {"ok": True, "symbol": payload.symbol}
+
+
+@router.get("/mt5/specs")
+async def mt5_get_specs(symbol: str):
+    specs = get_specs(symbol)
+    if specs is None:
+        raise HTTPException(status_code=404, detail=f"No specs yet for {symbol}")
+    return specs

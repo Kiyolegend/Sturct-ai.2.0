@@ -6,8 +6,13 @@ const API = "/trading-api";
 // FIX 2 — threshold >50 matches TradingChart/FrameworkPanel (was >10); DEC added
 const PIP = pipSize;
 const DEC = (price: number) => price > 50 ? 3 : 5;
-const RISK_PER_PIP = (lots: number, price: number) =>
-  price > 50 ? (lots * 100000 * 0.01) / price : lots * 100000 * 0.0001;
+const RISK_PER_PIP = (lots: number, price: number) => {
+  const pip = PIP(price);
+  if (price > 10_000) return lots * 1 * pip;
+  if (price > 500)    return lots * 100 * pip;
+  if (price > 50)     return (lots * 100000 * pip) / price;
+  return lots * 100000 * pip;
+};
 
 interface TradePanelProps {
   symbol:                   string;
@@ -31,6 +36,25 @@ interface Position {
 
 export function TradePanel({ symbol, currentPrice, clickedPrice, onClickedPriceConsumed, onSLChange, onTPChange, prefill, onPrefillConsumed  }: TradePanelProps) {
   const pip          = PIP(currentPrice);
+  const [liveSpecs, setLiveSpecs] = useState<{ contract_size: number; tick_value: number; tick_size: number } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLiveSpecs(null);
+    fetch(`${API}/mt5/specs?symbol=${encodeURIComponent(symbol)}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (!cancelled) setLiveSpecs(d); })
+      .catch(() => { if (!cancelled) setLiveSpecs(null); });
+    return () => { cancelled = true; };
+  }, [symbol]);
+
+  const pipValueUSD = (lots: number, price: number): number => {
+    if (liveSpecs) {
+      const p = PIP(price);
+      return (p / liveSpecs.tick_size) * liveSpecs.tick_value * lots;
+    }
+    return RISK_PER_PIP(lots, price);
+  };
   const defaultSL    = (price: number, dir: Direction) =>
     dir === "BUY" ? +(price - 20 * pip).toFixed(DEC(price)) : +(price + 20 * pip).toFixed(DEC(price));
   const defaultTP    = (price: number, dir: Direction) =>
@@ -186,8 +210,8 @@ export function TradePanel({ symbol, currentPrice, clickedPrice, onClickedPriceC
   const entryPrice = orderType === "MARKET" ? currentPrice : parseFloat(limitPrice);
   const slPips     = Math.abs(entryPrice - parseFloat(sl)) / pip;
   const tpPips     = Math.abs(entryPrice - parseFloat(tp)) / pip;
-  const riskUSD    = slPips * RISK_PER_PIP(parseFloat(lots), currentPrice);
-  const rewardUSD  = tpPips * RISK_PER_PIP(parseFloat(lots), currentPrice);
+  const riskUSD    = slPips * pipValueUSD(parseFloat(lots), currentPrice);
+  const rewardUSD  = tpPips * pipValueUSD(parseFloat(lots), currentPrice);
 
   const sendOrder = useCallback(async () => {
     setStage("sending");
